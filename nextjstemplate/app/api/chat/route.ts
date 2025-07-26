@@ -63,7 +63,7 @@ export async function POST(req: Request) {
     const llm = new ChatGoogleGenerativeAI({
       apiKey: process.env.GEMINI_API_KEY,
       temperature: 0.7,
-      model: "gemini-pro",
+      model: "gemini-1.5-flash",
     });
 
     // Create a prompt template for document-based Q&A
