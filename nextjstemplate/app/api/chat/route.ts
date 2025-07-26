@@ -8,7 +8,30 @@ import { StringOutputParser } from "@langchain/core/output_parsers";
 // Import the session vector stores from ingest API
 import { sessionVectorStores } from "../ingest/route";
 
+// Import YAML-based prompt configuration
+import { loadPromptConfig, getConfigStatus } from "@/lib/prompt-config";
+import { PromptBuilder } from "@/lib/prompt-builder";
+
 export const dynamic = "force-dynamic";
+
+// Initialize prompt builder at module level
+let promptBuilder: PromptBuilder | null = null;
+
+async function getPromptBuilder(): Promise<PromptBuilder> {
+  if (!promptBuilder) {
+    try {
+      const config = await loadPromptConfig();
+      promptBuilder = new PromptBuilder(config);
+      console.log(`[CHAT] Loaded prompt config v${config.metadata.version}`);
+    } catch (error) {
+      console.error('[CHAT] Failed to load prompt config, using fallback');
+      // Fallback will be handled by loadPromptConfig internally
+      const fallbackConfig = await loadPromptConfig();
+      promptBuilder = new PromptBuilder(fallbackConfig);
+    }
+  }
+  return promptBuilder;
+}
 
 export async function POST(req: Request) {
   try {
@@ -77,10 +100,12 @@ export async function POST(req: Request) {
     
     console.log(`Found ${relevantDocs.length} relevant document chunks ${isOverviewQuery ? '(overview mode)' : '(focused mode)'}`);
 
+    // Use YAML-configured error message if no documents found
     if (relevantDocs.length === 0) {
+      const builder = await getPromptBuilder();
       return NextResponse.json({
         role: "assistant" as const,
-        content: "I couldn't find any relevant information in the documents to answer your question. Could you try rephrasing your question or asking about something else?",
+        content: builder.getErrorMessage('no_documents'),
       });
     }
 
@@ -110,57 +135,27 @@ export async function POST(req: Request) {
       model: "gemini-1.5-flash",
     });
 
-    // Create a prompt template for document-based Q&A
-    const promptTemplate = isOverviewQuery ? `
-You are an intelligent assistant helping with elevator maintenance documentation. 
-The user is asking for an overview of multiple documents. Provide a comprehensive summary.
+    // Get prompt builder and generate context-aware prompt
+    const builder = await getPromptBuilder();
+    const promptContext = {
+      documents: context,
+      question: lastMessage.content,
+      queryType: isOverviewQuery ? 'overview' as const : 'specific' as const,
+      isFileSpecific: !!fileNameMatch,
+      fileName: fileNameMatch?.[1]
+    };
 
-CONTEXT FROM DOCUMENTS:
-{context}
+    // Generate the prompt using YAML configuration
+    const promptTemplate = builder.formatPrompt(promptContext);
 
-USER QUESTION: {question}
-
-INSTRUCTIONS:
-- Provide a comprehensive overview of ALL the documents provided
-- Group information logically (by document type, location, elevator IDs, etc.)
-- Include key details like elevator IDs, locations, dates, and types of work
-- If asking for "all documents", mention that you're showing information from the available sample
-- List each unique document and its main purpose/content
-- Be organized and systematic in your presentation
-- Note any patterns or trends across the documents
-
-ANSWER:` : `
-You are an intelligent assistant helping with elevator maintenance documentation. 
-Based on the provided documents, answer the user's question accurately and helpfully.
-
-CONTEXT FROM DOCUMENTS:
-{context}
-
-USER QUESTION: {question}
-
-INSTRUCTIONS:
-- Only use information from the provided documents
-- If the information isn't in the documents, say so clearly
-- Be specific and cite which document(s) you're referencing
-- For elevator IDs or specific maintenance records, provide exact details
-- Be helpful and professional
-
-ANSWER:`;
-
-    const prompt = ChatPromptTemplate.fromTemplate(promptTemplate);
-
-    // Create the processing chain
+    // Create simplified chain since template is already processed
     const chain = RunnableSequence.from([
-      prompt,
       llm,
       new StringOutputParser(),
     ]);
 
-    // Generate response using the chain
-    const response = await chain.invoke({
-      context: context,
-      question: lastMessage.content,
-    });
+    // Generate response using the chain with the formatted prompt
+    const response = await chain.invoke(promptTemplate);
 
     // Extract source information
     const sources = relevantDocs.map(doc => ({
