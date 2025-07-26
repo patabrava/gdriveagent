@@ -42,10 +42,14 @@ export async function POST(req: Request) {
 
     console.log(`Processing chat query: "${lastMessage.content}" for session: ${currentSessionId}`);
 
-    // Perform similarity search to find relevant documents
-    const relevantDocs = await vectorStore.similaritySearch(lastMessage.content, 4);
+    // Detect if user is asking for a comprehensive overview
+    const isOverviewQuery = /\b(overview|all documents?|list all|show all|summary of all|all files?|comprehensive|complete list)\b/i.test(lastMessage.content);
     
-    console.log(`Found ${relevantDocs.length} relevant document chunks`);
+    // Adjust search parameters based on query type
+    const searchLimit = isOverviewQuery ? 20 : 4; // More chunks for overview queries
+    const relevantDocs = await vectorStore.similaritySearch(lastMessage.content, searchLimit);
+    
+    console.log(`Found ${relevantDocs.length} relevant document chunks ${isOverviewQuery ? '(overview mode)' : '(focused mode)'}`);
 
     if (relevantDocs.length === 0) {
       return NextResponse.json({
@@ -54,8 +58,22 @@ export async function POST(req: Request) {
       });
     }
 
+    // For overview queries, group by unique files to ensure broader coverage
+    let processedDocs = relevantDocs;
+    if (isOverviewQuery) {
+      // Get unique files represented in the results
+      const fileMap = new Map();
+      relevantDocs.forEach(doc => {
+        const fileName = doc.metadata.fileName;
+        if (!fileMap.has(fileName) || doc.pageContent.length > fileMap.get(fileName).pageContent.length) {
+          fileMap.set(fileName, doc);
+        }
+      });
+      processedDocs = Array.from(fileMap.values()).slice(0, 15); // Limit to 15 unique files for manageable response
+    }
+
     // Create context from relevant documents
-    const context = relevantDocs.map((doc, index) => 
+    const context = processedDocs.map((doc, index) => 
       `Document ${index + 1} (${doc.metadata.fileName}):\n${doc.pageContent}`
     ).join('\n\n---\n\n');
 
@@ -67,7 +85,25 @@ export async function POST(req: Request) {
     });
 
     // Create a prompt template for document-based Q&A
-    const prompt = ChatPromptTemplate.fromTemplate(`
+    const promptTemplate = isOverviewQuery ? `
+You are an intelligent assistant helping with elevator maintenance documentation. 
+The user is asking for an overview of multiple documents. Provide a comprehensive summary.
+
+CONTEXT FROM DOCUMENTS:
+{context}
+
+USER QUESTION: {question}
+
+INSTRUCTIONS:
+- Provide a comprehensive overview of ALL the documents provided
+- Group information logically (by document type, location, elevator IDs, etc.)
+- Include key details like elevator IDs, locations, dates, and types of work
+- If asking for "all documents", mention that you're showing information from the available sample
+- List each unique document and its main purpose/content
+- Be organized and systematic in your presentation
+- Note any patterns or trends across the documents
+
+ANSWER:` : `
 You are an intelligent assistant helping with elevator maintenance documentation. 
 Based on the provided documents, answer the user's question accurately and helpfully.
 
@@ -83,7 +119,9 @@ INSTRUCTIONS:
 - For elevator IDs or specific maintenance records, provide exact details
 - Be helpful and professional
 
-ANSWER:`);
+ANSWER:`;
+
+    const prompt = ChatPromptTemplate.fromTemplate(promptTemplate);
 
     // Create the processing chain
     const chain = RunnableSequence.from([
