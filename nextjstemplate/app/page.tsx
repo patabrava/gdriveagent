@@ -8,6 +8,7 @@ import {
 } from "@/components/ui/resizable";
 import { Chat } from "@/components/chat";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Progress } from "@/components/ui/progress";
 
 export default function Home() {
   const [isLoading, setIsLoading] = useState(true);
@@ -15,6 +16,7 @@ export default function Home() {
   const [isIngested, setIsIngested] = useState(false);
   const [sessionId, setSessionId] = useState<string>("");
   const [ingestionStatus, setIngestionStatus] = useState<string>("");
+  const [progressValue, setProgressValue] = useState(0);
 
   useEffect(() => {
     // Generate a unique session ID
@@ -24,6 +26,7 @@ export default function Home() {
     const ingestDocuments = async () => {
       try {
         setIngestionStatus("Connecting to Google Drive...");
+        setProgressValue(10);
         
         const response = await fetch(`/api/ingest?sessionId=${newSessionId}`);
         if (!response.ok) {
@@ -31,20 +34,28 @@ export default function Home() {
           throw new Error(errorData.error || "Failed to start ingestion.");
         }
         
+        setIngestionStatus("Processing documents...");
+        setProgressValue(50);
+        
         const result = await response.json();
         console.log("Ingestion result:", result);
+        
+        setProgressValue(90);
         
         if (result.status === "ready") {
           setIsIngested(true);
           setIngestionStatus(`Successfully processed ${result.filesProcessed?.length || 0} files into ${result.totalChunks || 0} searchable chunks.`);
+          setProgressValue(100);
         } else {
           setIngestionStatus(result.message || "Ingestion completed");
           setIsIngested(true);
+          setProgressValue(100);
         }
       } catch (err: any) {
         console.error("Ingestion error:", err);
         setError(err.message);
         setIngestionStatus("Failed to load documents");
+        setProgressValue(0);
       } finally {
         setIsLoading(false);
       }
@@ -61,12 +72,15 @@ export default function Home() {
             <CardTitle>ElevatorDocChat</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="space-y-3">
-              <div className="animate-pulse">
-                <div className="h-2 bg-gray-200 rounded w-3/4 mb-2"></div>
-                <div className="h-2 bg-gray-200 rounded w-1/2"></div>
+            <div className="space-y-4">
+              <Progress value={progressValue} className="w-full" />
+              <div className="space-y-2">
+                <div className="flex justify-between text-sm">
+                  <span>Processing documents...</span>
+                  <span>{progressValue}%</span>
+                </div>
+                <p className="text-sm text-muted-foreground">{ingestionStatus || "Connecting to documents..."}</p>
               </div>
-              <p className="text-sm text-muted-foreground">{ingestionStatus || "Connecting to documents..."}</p>
             </div>
           </CardContent>
         </Card>

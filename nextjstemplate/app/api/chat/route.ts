@@ -15,6 +15,10 @@ export async function POST(req: Request) {
     const { messages, sessionId }: { messages: Message[], sessionId?: string } = await req.json();
     const currentSessionId = sessionId || 'default-session';
 
+    console.log(`Chat API received sessionId: ${currentSessionId}`);
+    console.log(`Available session IDs in cache:`, Array.from(sessionVectorStores.keys()));
+    console.log(`Vector store cache size:`, sessionVectorStores.size);
+
     // Get the latest user message
     const lastMessage = messages[messages.length - 1];
     
@@ -29,9 +33,10 @@ export async function POST(req: Request) {
     const vectorStore = sessionVectorStores.get(currentSessionId);
     
     if (!vectorStore) {
+      console.log(`No vector store found for session: ${currentSessionId}`);
       return NextResponse.json({
         role: "assistant" as const,
-        content: "I don't have access to any documents yet. Please wait for the document ingestion to complete, or refresh the page to restart the process.",
+        content: `I don't have access to any documents yet. Session ID: ${currentSessionId}. Available sessions: ${Array.from(sessionVectorStores.keys()).join(', ')}. Please wait for the document ingestion to complete, or refresh the page to restart the process.`,
       });
     }
 
@@ -102,6 +107,7 @@ ANSWER:`);
 
     console.log(`Generated response with ${sources.length} sources`);
 
+    // Return response in the format expected by the frontend
     return NextResponse.json({
       role: "assistant" as const,
       content: response,

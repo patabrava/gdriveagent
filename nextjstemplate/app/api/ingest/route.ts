@@ -9,7 +9,19 @@ import mammoth from "mammoth";
 import * as XLSX from "xlsx";
 
 // Global in-memory storage for session-based vector stores
-const sessionVectorStores = new Map<string, MemoryVectorStore>();
+// Use globalThis to persist across hot reloads in development
+declare global {
+  var sessionVectorStores: Map<string, MemoryVectorStore> | undefined;
+}
+
+const getSessionVectorStores = () => {
+  if (!globalThis.sessionVectorStores) {
+    globalThis.sessionVectorStores = new Map();
+  }
+  return globalThis.sessionVectorStores;
+};
+
+const sessionVectorStores = getSessionVectorStores();
 
 // Export for use in chat API
 export { sessionVectorStores };

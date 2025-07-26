@@ -31,24 +31,42 @@ export function Chat({ sessionId }: ChatProps) {
     if (!input.trim()) return;
 
     const userMessage: Message = { role: "user", content: input };
-    setMessages(prev => [...prev, userMessage]);
+    const updatedMessages = [...messages, userMessage];
+    setMessages(updatedMessages);
     setInput("");
     setIsLoading(true);
 
     try {
+      console.log("Sending messages to API:", updatedMessages);
+      console.log("Frontend Session ID:", sessionId);
+      
+      const requestBody = { 
+        messages: updatedMessages,
+        sessionId: sessionId 
+      };
+      console.log("Request body:", requestBody);
+      
       const response = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ 
-          messages: [...messages, userMessage],
-          sessionId: sessionId 
-        }),
+        body: JSON.stringify(requestBody),
       });
 
-      if (!response.ok) throw new Error("Failed to get response");
+      if (!response.ok) {
+        console.error("Chat API response not OK:", response.status, response.statusText);
+        throw new Error("Failed to get response");
+      }
 
       const assistantMessage = await response.json();
-      setMessages(prev => [...prev, assistantMessage]);
+      console.log("Received assistant message:", assistantMessage);
+      
+      // Ensure the message has the correct format
+      if (assistantMessage && assistantMessage.content) {
+        setMessages(prev => [...prev, assistantMessage]);
+      } else {
+        console.error("Invalid assistant message format:", assistantMessage);
+        throw new Error("Invalid response format");
+      }
     } catch (error) {
       console.error("Chat error:", error);
       setMessages(prev => [...prev, {
