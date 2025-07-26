@@ -1,0 +1,120 @@
+# YAML files - exclude as requested
+*.yaml
+*.yml
+
+# Google Cloud Service Account Keys (CRITICAL - Contains sensitive credentials)
+*.json
+!package.json
+!components.json
+!tsconfig.json
+!next-env.d.ts
+
+# Environment variables and sensitive configuration
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.env.*.local
+
+# Dependencies
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Next.js build outputs
+.next/
+out/
+build/
+dist/
+
+# Vercel deployment files
+.vercel
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Logs
+logs
+*.log
+
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# Coverage directory used by tools like istanbul
+coverage/
+*.lcov
+
+# nyc test coverage
+.nyc_output
+
+# ESLint cache
+.eslintcache
+
+# Optional npm cache directory
+.npm
+
+# Optional REPL history
+.node_repl_history
+
+# Output of 'npm pack'
+*.tgz
+
+# Yarn Integrity file
+.yarn-integrity
+
+# parcel-bundler cache (https://parceljs.org/)
+.cache
+.parcel-cache
+
+# Temporary folders
+tmp/
+temp/
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# API keys and secrets
+secrets/
+credentials/
+keys/
+
+# TypeScript incremental compilation cache
+*.tsbuildinfo
+
+# Storybook build outputs
+storybook-static
+
+# Turborepo
+.turbo
+
+# Personal notes and documentation that shouldn't be shared
+tasks.md
+plan_testscript.yaml
+prd.yaml
+cause_debugging.yaml
+code_contraction.yaml
+code_expansion.yaml
+code_implosion.yaml
+slow_planning.yaml
+new_code.yaml
