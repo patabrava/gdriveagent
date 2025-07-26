@@ -26,11 +26,14 @@ const sessionVectorStores = getSessionVectorStores();
 // Export for use in chat API
 export { sessionVectorStores };
 
-// Helper function to parse different file types
+// Helper function to parse different file types with observable error handling
 async function parseFileContent(fileBuffer: Buffer, mimeType: string, fileName: string): Promise<string> {
   try {
+    console.log(`[PARSE_START] Parsing file: ${fileName} (${mimeType}) - Size: ${fileBuffer.length} bytes`);
+    
     switch (mimeType) {
       case 'application/pdf':
+        console.log(`[PARSE_PDF] Processing PDF: ${fileName}`);
         // Create a temporary file-like object for PDFLoader
         const tempFile = new Blob([fileBuffer], { type: 'application/pdf' });
         const tempFileName = `temp_${fileName}`;
@@ -52,47 +55,105 @@ async function parseFileContent(fileBuffer: Buffer, mimeType: string, fileName: 
           // Clean up temp file
           fs.unlinkSync(tempFilePath);
           
+          console.log(`[PARSE_SUCCESS] PDF parsed: ${fileName} - ${fullText.length} characters extracted`);
           return fullText;
         } catch (error) {
-          // Clean up temp file even if there's an error
+          // Clean up temp file even if there's an error - graceful fallback
           try {
             fs.unlinkSync(tempFilePath);
           } catch (cleanupError) {
-            // Ignore cleanup errors
+            console.warn(`[CLEANUP_WARN] Failed to cleanup temp file: ${tempFilePath}`);
           }
           throw error;
         }
       
       case 'application/vnd.openxmlformats-officedocument.wordprocessingml.document':
+        console.log(`[PARSE_DOCX] Processing Word document: ${fileName}`);
         const docxResult = await mammoth.extractRawText({ buffer: fileBuffer });
+        console.log(`[PARSE_SUCCESS] DOCX parsed: ${fileName} - ${docxResult.value.length} characters extracted`);
         return docxResult.value;
       
       case 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':
       case 'application/vnd.ms-excel':
+        console.log(`[PARSE_EXCEL] Processing Excel document: ${fileName}`);
         const workbook = XLSX.read(fileBuffer, { type: 'buffer' });
         let excelText = '';
         workbook.SheetNames.forEach((sheetName: string) => {
           const sheet = workbook.Sheets[sheetName];
           excelText += XLSX.utils.sheet_to_txt(sheet) + '\n';
         });
+        console.log(`[PARSE_SUCCESS] Excel parsed: ${fileName} - ${excelText.length} characters extracted from ${workbook.SheetNames.length} sheets`);
         return excelText;
       
       case 'text/plain':
-        return fileBuffer.toString('utf-8');
+        console.log(`[PARSE_TEXT] Processing text file: ${fileName}`);
+        const textContent = fileBuffer.toString('utf-8');
+        console.log(`[PARSE_SUCCESS] Text parsed: ${fileName} - ${textContent.length} characters extracted`);
+        return textContent;
       
       default:
-        console.log(`Unsupported file type: ${mimeType} for file: ${fileName}`);
+        console.warn(`[PARSE_UNSUPPORTED] Unsupported file type: ${mimeType} for file: ${fileName}`);
         return `[File: ${fileName} - Type: ${mimeType} - Manual review needed]`;
     }
   } catch (error) {
-    console.error(`Error parsing file ${fileName}:`, error);
-    return `[Error parsing file: ${fileName}]`;
+    console.error(`[PARSE_ERROR] Error parsing file ${fileName}:`, error);
+    // Graceful fallback - return error info instead of failing completely
+    return `[Error parsing file: ${fileName} - ${error instanceof Error ? error.message : 'Unknown error'}]`;
   }
+}
+
+// Global progress tracking for sessions
+declare global {
+  var sessionProgress: Map<string, {
+    currentStep: number;
+    totalSteps: number;
+    currentFile: string;
+    status: string;
+    filesProcessed: number;
+    totalFiles: number;
+  }> | undefined;
+}
+
+const getSessionProgress = () => {
+  if (!globalThis.sessionProgress) {
+    globalThis.sessionProgress = new Map();
+  }
+  return globalThis.sessionProgress;
+};
+
+const sessionProgress = getSessionProgress();
+
+// Helper function to update progress with structured logging
+function updateProgress(
+  sessionId: string, 
+  step: number, 
+  totalSteps: number, 
+  status: string, 
+  currentFile: string = '',
+  filesProcessed: number = 0,
+  totalFiles: number = 0
+) {
+  const progressData = {
+    currentStep: step,
+    totalSteps,
+    currentFile,
+    status,
+    filesProcessed,
+    totalFiles,
+    percentage: Math.floor((step / totalSteps) * 100)
+  };
+  
+  sessionProgress.set(sessionId, progressData);
+  
+  // Structured logging for observability
+  console.log(`[PROGRESS] Session: ${sessionId} | Step: ${step}/${totalSteps} (${progressData.percentage}%) | Status: ${status} | File: ${currentFile} | Files: ${filesProcessed}/${totalFiles}`);
+  
+  return progressData;
 }
 
 export async function GET(req: NextRequest) {
   try {
-    console.log("Starting Google Drive ingest process...");
+    console.log("[INGEST_START] Starting Google Drive ingest process...");
     
     // Get session ID from query params
     const url = new URL(req.url);
@@ -100,7 +161,7 @@ export async function GET(req: NextRequest) {
     
     // Check if we already have a vector store for this session
     if (sessionVectorStores.has(sessionId)) {
-      console.log(`Vector store already exists for session: ${sessionId}`);
+      console.log(`[SESSION_EXISTS] Vector store already exists for session: ${sessionId}`);
       return NextResponse.json({
         message: "Documents already processed for this session.",
         sessionId,
@@ -108,13 +169,16 @@ export async function GET(req: NextRequest) {
       });
     }
     
-    // Ensure environment variables are loaded
+    // Initialize progress tracking
+    updateProgress(sessionId, 0, 10, "Initializing connection to Google Drive...");
+    
+    // Ensure environment variables are loaded with fail-fast validation
     const clientEmail = process.env.GOOGLE_CLIENT_EMAIL;
     const privateKey = process.env.GOOGLE_PRIVATE_KEY?.replace(/\\n/g, '\n');
     const folderId = process.env.GOOGLE_DRIVE_FOLDER_ID;
     const geminiApiKey = process.env.GEMINI_API_KEY;
 
-    console.log("Environment variables check:", {
+    console.log("[ENV_CHECK] Environment variables validation:", {
       clientEmail: clientEmail ? "✓ Present" : "✗ Missing",
       privateKey: privateKey ? "✓ Present" : "✗ Missing", 
       folderId: folderId ? "✓ Present" : "✗ Missing",
@@ -122,7 +186,8 @@ export async function GET(req: NextRequest) {
     });
 
     if (!clientEmail || !privateKey || !folderId || !geminiApiKey) {
-      console.error("Missing environment variables!");
+      console.error("[ERROR] Missing environment variables!");
+      updateProgress(sessionId, 0, 10, "ERROR: Missing required configuration", "", 0, 0);
       return NextResponse.json(
         {
           error: "Missing required environment variables (Google Drive credentials, folder ID, or Gemini API key).",
@@ -131,7 +196,8 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    console.log("Creating Google Auth...");
+    updateProgress(sessionId, 1, 10, "Creating Google Drive authentication...");
+    console.log("[AUTH_CREATE] Creating Google Auth...");
     // Authenticate with Google (preserve existing working code)
     const auth = new google.auth.GoogleAuth({
       credentials: {
@@ -141,10 +207,12 @@ export async function GET(req: NextRequest) {
       scopes: ["https://www.googleapis.com/auth/drive.readonly"],
     });
 
-    console.log("Creating Drive client...");
+    updateProgress(sessionId, 2, 10, "Connecting to Google Drive API...");
+    console.log("[DRIVE_CLIENT] Creating Drive client...");
     const drive = google.drive({ version: "v3", auth });
 
-    console.log("Listing files in folder:", folderId);
+    updateProgress(sessionId, 3, 10, "Scanning documents in folder...");
+    console.log("[FILE_LIST] Listing files in folder:", folderId);
     // List files in the specified folder (preserve existing working code)
     const res = await drive.files.list({
       q: `'${folderId}' in parents`,
@@ -155,13 +223,16 @@ export async function GET(req: NextRequest) {
     const files = res.data.files;
 
     if (!files || files.length === 0) {
+      updateProgress(sessionId, 10, 10, "No documents found in folder");
       return NextResponse.json(
         { message: "No files found in the specified folder." },
         { status: 200 }
       );
     }
 
-    console.log(`Found ${files.length} files. Starting document processing...`);
+    const totalFiles = files.length;
+    updateProgress(sessionId, 4, 10, `Found ${totalFiles} documents. Initializing processing...`, "", 0, totalFiles);
+    console.log(`[FILES_FOUND] Found ${totalFiles} files. Starting document processing...`);
     
     // Initialize embeddings and text splitter
     const embeddings = new GoogleGenerativeAIEmbeddings({
@@ -174,12 +245,16 @@ export async function GET(req: NextRequest) {
       chunkOverlap: 200,
     });
 
+    updateProgress(sessionId, 5, 10, "Processing documents...", "", 0, totalFiles);
     const allDocuments: Document[] = [];
 
-    // Process each file
-    for (const file of files) {
+    // Process each file with granular progress tracking
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
       try {
-        console.log(`Processing file: ${file.name} (${file.mimeType})`);
+        const currentFile = file.name || `file-${i + 1}`;
+        updateProgress(sessionId, 5, 10, `Processing: ${currentFile}`, currentFile, i, totalFiles);
+        console.log(`[FILE_PROCESS] Processing file ${i + 1}/${totalFiles}: ${currentFile} (${file.mimeType})`);
         
         // Download file content
         const fileResponse = await drive.files.get({
@@ -210,30 +285,41 @@ export async function GET(req: NextRequest) {
           }));
           
           allDocuments.push(...docs);
-          console.log(`Processed ${file.name}: ${chunks.length} chunks`);
+          console.log(`[FILE_SUCCESS] Processed ${currentFile}: ${chunks.length} chunks`);
+        } else {
+          console.log(`[FILE_EMPTY] File ${currentFile} has no processable content`);
         }
+        
+        // Update progress after each file
+        updateProgress(sessionId, 5, 10, `Processed: ${currentFile}`, currentFile, i + 1, totalFiles);
       } catch (error) {
-        console.error(`Error processing file ${file.name}:`, error);
-        // Continue with other files even if one fails
+        console.error(`[FILE_ERROR] Error processing file ${file.name}:`, error);
+        // Continue with other files even if one fails - graceful fallback
+        updateProgress(sessionId, 5, 10, `Error processing: ${file.name || 'unknown file'}`, file.name || '', i + 1, totalFiles);
       }
     }
 
     if (allDocuments.length === 0) {
+      updateProgress(sessionId, 10, 10, "No processable content found");
       return NextResponse.json(
         { message: "No processable content found in documents." },
         { status: 200 }
       );
     }
 
-    console.log(`Creating vector store with ${allDocuments.length} document chunks...`);
+    updateProgress(sessionId, 7, 10, `Creating searchable index from ${allDocuments.length} document chunks...`);
+    console.log(`[VECTOR_CREATE] Creating vector store with ${allDocuments.length} document chunks...`);
     
     // Create vector store from documents
     const vectorStore = await MemoryVectorStore.fromDocuments(allDocuments, embeddings);
     
+    updateProgress(sessionId, 9, 10, "Finalizing document index...");
+    
     // Store in session cache
     sessionVectorStores.set(sessionId, vectorStore);
     
-    console.log(`Vector store created and cached for session: ${sessionId}`);
+    updateProgress(sessionId, 10, 10, `Successfully processed ${totalFiles} documents into ${allDocuments.length} searchable chunks`);
+    console.log(`[COMPLETE] Vector store created and cached for session: ${sessionId}`);
 
     return NextResponse.json(
       {
@@ -250,14 +336,20 @@ export async function GET(req: NextRequest) {
       { status: 200 }
     );
   } catch (error: any) {
-    console.error("Error during Google Drive ingestion:", error);
-    console.error("Error stack:", error.stack);
-    console.error("Error details:", {
+    console.error("[CRITICAL_ERROR] Error during Google Drive ingestion:", error);
+    console.error("[ERROR_STACK]", error.stack);
+    console.error("[ERROR_DETAILS]", {
       message: error.message,
       code: error.code,
       status: error.status,
       statusText: error.statusText,
     });
+    
+    // Update progress to show error state
+    const url = new URL(req.url);
+    const sessionId = url.searchParams.get('sessionId') || 'default-session';
+    updateProgress(sessionId, 0, 10, `ERROR: ${error.message}`, "", 0, 0);
+    
     return NextResponse.json(
       {
         error: "Failed to ingest documents from Google Drive.",
@@ -265,6 +357,37 @@ export async function GET(req: NextRequest) {
         code: error.code,
         stack: error.stack,
       },
+      { status: 500 }
+    );
+  }
+}
+
+// New endpoint to get progress updates
+export async function POST(req: NextRequest) {
+  try {
+    const { sessionId } = await req.json();
+    
+    if (!sessionId) {
+      return NextResponse.json(
+        { error: "Session ID is required" },
+        { status: 400 }
+      );
+    }
+    
+    const progress = sessionProgress.get(sessionId);
+    
+    if (!progress) {
+      return NextResponse.json(
+        { error: "Progress not found for session" },
+        { status: 404 }
+      );
+    }
+    
+    return NextResponse.json(progress);
+  } catch (error: any) {
+    console.error("[PROGRESS_ERROR] Error getting progress:", error);
+    return NextResponse.json(
+      { error: "Failed to get progress" },
       { status: 500 }
     );
   }

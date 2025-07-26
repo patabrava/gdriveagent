@@ -45,9 +45,35 @@ export async function POST(req: Request) {
     // Detect if user is asking for a comprehensive overview
     const isOverviewQuery = /\b(overview|all documents?|list all|show all|summary of all|all files?|comprehensive|complete list)\b/i.test(lastMessage.content);
     
+    // Check if user is asking about a specific document by filename
+    const fileNameMatch = lastMessage.content.match(/(?:Rechnung|Invoice|Document|File)[\s\-_]*(\w+(?:\.\w+)?)/i);
+    
     // Adjust search parameters based on query type
     const searchLimit = isOverviewQuery ? 20 : 4; // More chunks for overview queries
-    const relevantDocs = await vectorStore.similaritySearch(lastMessage.content, searchLimit);
+    let relevantDocs = await vectorStore.similaritySearch(lastMessage.content, searchLimit);
+    
+    // If searching for a specific document and no results contain it, try filename-based search
+    if (fileNameMatch && !isOverviewQuery) {
+      const searchTerm = fileNameMatch[1];
+      const hasTargetDoc = relevantDocs.some(doc => 
+        doc.metadata.fileName.toLowerCase().includes(searchTerm.toLowerCase())
+      );
+      
+      if (!hasTargetDoc) {
+        console.log(`Target document "${searchTerm}" not found in similarity search. Expanding search...`);
+        // Get more results and filter by filename
+        const expandedDocs = await vectorStore.similaritySearch(lastMessage.content, 20);
+        const fileMatchedDocs = expandedDocs.filter(doc => 
+          doc.metadata.fileName.toLowerCase().includes(searchTerm.toLowerCase())
+        );
+        
+        if (fileMatchedDocs.length > 0) {
+          // Prioritize filename matches while keeping some semantic results
+          relevantDocs = [...fileMatchedDocs, ...relevantDocs.slice(0, 2)];
+          console.log(`Found ${fileMatchedDocs.length} chunks from target document "${searchTerm}"`);
+        }
+      }
+    }
     
     console.log(`Found ${relevantDocs.length} relevant document chunks ${isOverviewQuery ? '(overview mode)' : '(focused mode)'}`);
 

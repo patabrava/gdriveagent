@@ -8,7 +8,7 @@ import {
 } from "@/components/ui/resizable";
 import { Chat } from "@/components/chat";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Progress } from "@/components/ui/progress";
+import { DocumentProgress } from "@/components/ui/document-progress";
 
 export default function Home() {
   const [isLoading, setIsLoading] = useState(true);
@@ -17,6 +17,43 @@ export default function Home() {
   const [sessionId, setSessionId] = useState<string>("");
   const [ingestionStatus, setIngestionStatus] = useState<string>("");
   const [progressValue, setProgressValue] = useState(0);
+  const [currentFile, setCurrentFile] = useState<string>("");
+  const [filesProgress, setFilesProgress] = useState<{ processed: number; total: number }>({ processed: 0, total: 0 });
+  const [progressPollingInterval, setProgressPollingInterval] = useState<NodeJS.Timeout | null>(null);
+
+  // Progress polling function with structured error handling
+  const pollProgress = async (sessionId: string) => {
+    try {
+      const response = await fetch(`/api/progress?sessionId=${sessionId}`);
+      if (!response.ok) {
+        console.warn(`[PROGRESS_POLL] Failed to fetch progress: ${response.status}`);
+        return;
+      }
+      
+      const progressData = await response.json();
+      
+      // Update UI with real-time progress
+      setProgressValue(progressData.percentage || 0);
+      setIngestionStatus(progressData.status || "Processing...");
+      setCurrentFile(progressData.currentFile || "");
+      setFilesProgress({
+        processed: progressData.filesProcessed || 0,
+        total: progressData.totalFiles || 0
+      });
+      
+      console.log(`[PROGRESS_UPDATE] ${progressData.percentage}% - ${progressData.status}`);
+      
+      // Stop polling when complete
+      if (progressData.percentage >= 100) {
+        if (progressPollingInterval) {
+          clearInterval(progressPollingInterval);
+          setProgressPollingInterval(null);
+        }
+      }
+    } catch (error) {
+      console.warn("[PROGRESS_POLL_ERROR] Error polling progress:", error);
+    }
+  };
 
   useEffect(() => {
     // Generate a unique session ID
@@ -25,8 +62,14 @@ export default function Home() {
 
     const ingestDocuments = async () => {
       try {
-        setIngestionStatus("Connecting to Google Drive...");
-        setProgressValue(10);
+        // Start progress polling immediately
+        const interval = setInterval(() => pollProgress(newSessionId), 1000); // Poll every second
+        setProgressPollingInterval(interval);
+        
+        setIngestionStatus("Initializing connection...");
+        setProgressValue(0);
+        
+        console.log("[INGEST_START] Starting document ingestion for session:", newSessionId);
         
         const response = await fetch(`/api/ingest?sessionId=${newSessionId}`);
         if (!response.ok) {
@@ -34,56 +77,61 @@ export default function Home() {
           throw new Error(errorData.error || "Failed to start ingestion.");
         }
         
-        setIngestionStatus("Processing documents...");
-        setProgressValue(50);
-        
         const result = await response.json();
-        console.log("Ingestion result:", result);
+        console.log("[INGEST_RESULT] Ingestion completed:", result);
         
-        setProgressValue(90);
+        // Final progress update
+        setProgressValue(100);
         
         if (result.status === "ready") {
           setIsIngested(true);
           setIngestionStatus(`Successfully processed ${result.filesProcessed?.length || 0} files into ${result.totalChunks || 0} searchable chunks.`);
-          setProgressValue(100);
         } else {
           setIngestionStatus(result.message || "Ingestion completed");
           setIsIngested(true);
-          setProgressValue(100);
+        }
+        
+        // Stop polling after completion
+        if (interval) {
+          clearInterval(interval);
+          setProgressPollingInterval(null);
         }
       } catch (err: any) {
-        console.error("Ingestion error:", err);
+        console.error("[INGEST_ERROR] Ingestion failed:", err);
         setError(err.message);
         setIngestionStatus("Failed to load documents");
         setProgressValue(0);
+        
+        // Stop polling on error
+        if (progressPollingInterval) {
+          clearInterval(progressPollingInterval);
+          setProgressPollingInterval(null);
+        }
       } finally {
         setIsLoading(false);
       }
     };
 
     ingestDocuments();
+    
+    // Cleanup on unmount
+    return () => {
+      if (progressPollingInterval) {
+        clearInterval(progressPollingInterval);
+      }
+    };
   }, []);
 
   if (isLoading) {
     return (
       <div className="flex items-center justify-center h-screen">
-        <Card className="w-96">
-          <CardHeader>
-            <CardTitle>ElevatorDocChat</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-4">
-              <Progress value={progressValue} className="w-full" />
-              <div className="space-y-2">
-                <div className="flex justify-between text-sm">
-                  <span>Processing documents...</span>
-                  <span>{progressValue}%</span>
-                </div>
-                <p className="text-sm text-muted-foreground">{ingestionStatus || "Connecting to documents..."}</p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
+        <DocumentProgress
+          progressValue={progressValue}
+          ingestionStatus={ingestionStatus}
+          currentFile={currentFile}
+          filesProgress={filesProgress}
+          error={error}
+        />
       </div>
     );
   }
