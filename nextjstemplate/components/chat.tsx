@@ -6,6 +6,8 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 interface Message {
   role: "user" | "assistant";
@@ -97,7 +99,15 @@ export function Chat({ sessionId }: ChatProps) {
                   <p className="font-semibold">
                     {message.role === "user" ? "You" : "Assistant"}
                   </p>
-                  <p>{message.content}</p>
+                  {message.role === "user" ? (
+                    <p>{message.content}</p>
+                  ) : (
+                    <div className="prose prose-sm max-w-none">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                        {message.content}
+                      </ReactMarkdown>
+                    </div>
+                  )}
                   {message.role === 'assistant' && message.sources && (
                     <div className="mt-2">
                       <h3 className="text-sm font-semibold">Sources:</h3>

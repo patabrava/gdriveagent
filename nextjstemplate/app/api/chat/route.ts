@@ -11,6 +11,7 @@ import { sessionVectorStores } from "../ingest/route";
 // Import YAML-based prompt configuration
 import { loadPromptConfig, getConfigStatus } from "@/lib/prompt-config";
 import { PromptBuilder } from "@/lib/prompt-builder";
+import { EnhancedResponseFormatter } from "@/lib/enhanced-response-formatter";
 
 export const dynamic = "force-dynamic";
 
@@ -34,9 +35,11 @@ async function getPromptBuilder(): Promise<PromptBuilder> {
 }
 
 export async function POST(req: Request) {
+  let currentSessionId: string = 'default-session'; // Declare at function level for error handling
+  
   try {
     const { messages, sessionId }: { messages: Message[], sessionId?: string } = await req.json();
-    const currentSessionId = sessionId || 'default-session';
+    currentSessionId = sessionId || 'default-session';
 
     console.log(`Chat API received sessionId: ${currentSessionId}`);
     console.log(`Available session IDs in cache:`, Array.from(sessionVectorStores.keys()));
@@ -157,29 +160,57 @@ export async function POST(req: Request) {
     // Generate response using the chain with the formatted prompt
     const response = await chain.invoke(promptTemplate);
 
-    // Extract source information
+    // Extract source information first for logging
     const sources = relevantDocs.map(doc => ({
       fileName: doc.metadata.fileName,
       fileId: doc.metadata.fileId,
       pageNumber: doc.metadata.chunkIndex + 1, // Use chunk index as page reference
     }));
 
-    console.log(`Generated response with ${sources.length} sources`);
+    // Apply enhanced response formatting for better markdown structure
+    const queryType = isOverviewQuery ? 'overview' : 'specific';
+    const { formatted: formattedResponse, metrics } = await EnhancedResponseFormatter.formatResponse(response, queryType);
+    
+    // Structured logging for observability (MONOCODE Observable Implementation)
+    console.log(`[CHAT] Response generated:`, {
+      sessionId: currentSessionId,
+      queryType,
+      responseLength: response.length,
+      formattedLength: formattedResponse.length,
+      processingTimeMs: metrics.processingTimeMs,
+      sourcesCount: sources.length,
+      headersAdded: metrics.headersAdded,
+      listsFormatted: metrics.listsFormatted,
+      timestamp: new Date().toISOString()
+    });
+
+    console.log(`[CHAT] Generated formatted response with ${sources.length} sources`);
 
     // Return response in the format expected by the frontend
     return NextResponse.json({
       role: "assistant" as const,
-      content: response,
+      content: formattedResponse, // Use formatted response instead of raw response
       sources: sources,
     });
 
   } catch (error) {
-    console.error("Chat API error:", error);
+    // Explicit Error Handling (MONOCODE principle)
+    const errorDetails = {
+      sessionId: currentSessionId || 'unknown',
+      errorType: error instanceof Error ? error.constructor.name : 'UnknownError',
+      message: error instanceof Error ? error.message : 'Unknown error occurred',
+      timestamp: new Date().toISOString(),
+      stack: error instanceof Error ? error.stack : undefined
+    };
+    
+    console.error("[CHAT] Error occurred:", errorDetails);
+    
     return NextResponse.json(
       { 
         role: "assistant" as const,
-        content: "I encountered an error while processing your question. Please try again.",
-        error: "Internal server error" 
+        content: "I encountered an error while processing your question. Please try again or contact support if the issue persists.",
+        error: "Internal server error",
+        errorId: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}` // For tracking
       },
       { status: 500 }
     );

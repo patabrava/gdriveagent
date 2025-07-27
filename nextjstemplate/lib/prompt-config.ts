@@ -3,13 +3,33 @@ import fs from 'fs';
 import path from 'path';
 import yaml from 'js-yaml';
 
-// Zod schema for strict validation
-const PromptConfigSchema = z.object({
+// Enhanced Zod schema for structure validation
+const EnhancedPromptConfigSchema = z.object({
   metadata: z.object({
     version: z.string(),
     description: z.string(),
     last_updated: z.string().optional(),
+    structure_enforcement: z.boolean().optional(),
   }),
+  fallback_templates: z.record(z.string()).optional(),
+  structure_rules: z.object({
+    mandatory_elements: z.array(z.any()).optional(),
+    heading_hierarchy: z.object({
+      max_levels: z.number().optional(),
+      enforce_sequence: z.boolean().optional(),
+      skip_detection: z.boolean().optional(),
+    }).optional(),
+    content_organization: z.object({
+      max_section_length: z.number().optional(),
+      auto_break_threshold: z.number().optional(),
+      require_visual_breaks: z.boolean().optional(),
+    }).optional(),
+  }).optional(),
+  performance_targets: z.object({
+    formatting_latency_ms: z.number().optional(),
+    readability_score_min: z.number().optional(),
+    structure_compliance_min: z.number().optional(),
+  }).optional(),
   prompts: z.object({
     system: z.object({
       base: z.string().min(50, "Base prompt too short"),
@@ -29,11 +49,17 @@ const PromptConfigSchema = z.object({
   formatting: z.object({
     citations: z.record(z.string()),
     markdown: z.record(z.string()),
+    readability: z.record(z.any()).optional(),
   }),
   error_handling: z.record(z.string()),
+  content_types: z.record(z.any()).optional(),
+  metrics: z.record(z.boolean()).optional(),
 });
 
-export type PromptConfig = z.infer<typeof PromptConfigSchema>;
+// Alias for backward compatibility
+const PromptConfigSchema = EnhancedPromptConfigSchema;
+
+export type PromptConfig = z.infer<typeof EnhancedPromptConfigSchema>;
 
 // Fallback configuration embedded in code (following CODE_EXPANSION principle)
 const DEFAULT_CONFIG: PromptConfig = {
