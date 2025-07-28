@@ -10,7 +10,6 @@ import { sessionVectorStores } from "../ingest/route";
 // Import YAML-based prompt configuration
 import { loadPromptConfig } from "@/lib/prompt-config";
 import { PromptBuilder } from "@/lib/prompt-builder";
-import { EnhancedResponseFormatter } from "@/lib/enhanced-response-formatter";
 
 export const dynamic = "force-dynamic";
 
@@ -256,20 +255,16 @@ export async function POST(req: Request) {
       pageNumber: doc.metadata.chunkIndex + 1, // Use chunk index as page reference
     }));
 
-    // Apply enhanced response formatting for better markdown structure
+    // Apply response formatting - simplified approach using only prompts.yaml
     const queryType = isOverviewQuery ? 'overview' : 'specific';
-    const { formatted: formattedResponse, metrics } = await EnhancedResponseFormatter.formatResponse(response, queryType);
+    const formattedResponse = response; // Direct response without additional formatting
     
     // Structured logging for observability (MONOCODE Observable Implementation)
     console.log(`[CHAT] Response generated:`, {
       sessionId: currentSessionId,
       queryType,
       responseLength: response.length,
-      formattedLength: formattedResponse.length,
-      processingTimeMs: metrics.processingTimeMs,
       sourcesCount: sources.length,
-      headersAdded: metrics.headersAdded,
-      listsFormatted: metrics.listsFormatted,
       timestamp: new Date().toISOString()
     });
 

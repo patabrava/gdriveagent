@@ -34,27 +34,8 @@ export class PromptBuilder {
       // Keep the elevator-specific format as defined in the config
     } else if (queryType === 'specific') {
       // Use a general format without source duplication for non-elevator queries
-      formatInstructions = `
-        # 🔍 Query Results
-        
-        ## Direct Answer
-        
-        *[Clear, direct response to the question]*
-        
-        ## 📋 Details
-        
-        - **[Key Detail 1]**: [Value] 
-          - **Source**: \`[Document: filename]\`
-          - **Context**: [Additional relevant information]
-        
-        - **[Key Detail 2]**: [Value]
-          - **Source**: \`[Document: filename]\`
-          - **Context**: [Additional relevant information]
-        
-        ## 🔍 Additional Context
-        
-        *[Any relevant background information or related findings]*
-      `;
+      // Use fallback template from config
+      formatInstructions = this.config.fallback_templates?.default_specific || queryConfig.format_instructions;
     }
     
     // Build the complete prompt
@@ -66,11 +47,29 @@ export class PromptBuilder {
     }
     
     if (isElevatorSpecific && elevatorId) {
-      fullPrompt += `The user is asking specifically about elevator ID/number "${elevatorId}". Search thoroughly through all provided documents to find any information about this specific elevator, including maintenance records, malfunctions, inspections, invoices, and any related work. Be comprehensive in analyzing all documents for this elevator ID.\n\n`;
+      fullPrompt += `The user is asking specifically about elevator ID/number "${elevatorId}". Search thoroughly through all provided documents to find any information about this specific elevator, including maintenance records, malfunctions, inspections, invoices, and any related work. Be comprehensive in analyzing all documents for this elevator ID.
+
+CRITICAL FOR ADDRESS EXTRACTION: When processing invoices, scan the ENTIRE document for address information including:
+- "Adresse der Anlage" / "Objektadresse" / "Anschrift" fields
+- Street names, house numbers, postal codes, city names
+- Extract and combine ALL address components found, even if they appear in different sections
+- Never assume address information is incomplete - search thoroughly before concluding data is missing
+
+`;
     }
     
     // Add query type enhancement
     fullPrompt += `${enhancement}\n\n`;
+    
+    // Add universal address extraction guidance for all queries
+    fullPrompt += `UNIVERSAL ADDRESS EXTRACTION RULE:
+For ANY query involving invoices or elevator information, always extract complete address details by scanning for:
+- "Adresse der Anlage", "Objektadresse", "Anschrift" (German address fields)
+- Street names, house numbers, postal codes (PLZ), city names
+- Combine all found address components into complete address information
+- If city or postal code exists anywhere in the document, include it in the location information
+
+`;
     
     // Add document context
     fullPrompt += `CONTEXT FROM DOCUMENTS:\n{context}\n\n`;

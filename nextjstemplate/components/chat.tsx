@@ -28,6 +28,49 @@ export function Chat({ sessionId }: ChatProps) {
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
 
+  // Observable Implementation: Source relevance filtering with structured logging
+  const isSourceRelevantToContent = (source: { fileName: string; fileId: string; pageNumber: number }, content: string): boolean => {
+    try {
+      // Explicit Error Handling: Validate inputs
+      if (!source?.fileName || !content) {
+        console.log("Source relevance check - Invalid input:", { hasFileName: !!source?.fileName, hasContent: !!content });
+        return false;
+      }
+
+      const fileName = source.fileName.toLowerCase();
+      const contentLower = content.toLowerCase();
+      
+      // Heuristic-Based Source Matching: Check for file references in content
+      const fileNameWithoutExt = fileName.replace(/\.[^/.]+$/, "");
+      const isFileNameReferenced = contentLower.includes(fileName) || 
+                                  contentLower.includes(fileNameWithoutExt) ||
+                                  contentLower.includes(`document: ${fileName}`) ||
+                                  contentLower.includes(`file: ${fileName}`);
+      
+      // Progressive Construction: Start with basic filename matching, can extend with more sophisticated checks
+      const isPageReferenced = contentLower.includes(`page ${source.pageNumber}`) ||
+                              contentLower.includes(`page: ${source.pageNumber}`) ||
+                              contentLower.includes(`seite ${source.pageNumber}`); // German support
+      
+      const isRelevant = isFileNameReferenced || isPageReferenced;
+      
+      // Structured Logging: Document filtering decisions
+      console.log("Source relevance analysis:", {
+        fileName,
+        pageNumber: source.pageNumber,
+        fileNameReferenced: isFileNameReferenced,
+        pageReferenced: isPageReferenced,
+        finalDecision: isRelevant
+      });
+      
+      return isRelevant;
+    } catch (error) {
+      // Fail Fast, Fail Loud: Log errors but don't break the UI
+      console.error("Error in source relevance check:", error);
+      return false; // Graceful Fallbacks: Default to hiding questionable sources
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!input.trim()) return;
@@ -110,13 +153,28 @@ export function Chat({ sessionId }: ChatProps) {
                   )}
                   {message.role === 'assistant' && message.sources && (
                     <div className="mt-2">
-                      <h3 className="text-sm font-semibold">Sources:</h3>
-                      {message.sources.map((source, sourceIndex) => (
-                        <div key={sourceIndex} className="text-xs text-muted-foreground p-2 bg-secondary rounded-md">
-                          <p>File: {source.fileName}</p>
-                          <p>Page: {source.pageNumber}</p>
-                        </div>
-                      ))}
+                      {(() => {
+                        const relevantSources = message.sources.filter((source) => 
+                          isSourceRelevantToContent(source, message.content)
+                        );
+                        
+                        // Graceful Fallbacks: Show section only if relevant sources exist
+                        if (relevantSources.length === 0) {
+                          return null; // Progressive Construction: Clean UI when no relevant sources
+                        }
+                        
+                        return (
+                          <>
+                            <h3 className="text-sm font-semibold">Sources:</h3>
+                            {relevantSources.map((source, sourceIndex) => (
+                              <div key={sourceIndex} className="text-xs text-muted-foreground p-2 bg-secondary rounded-md mb-1">
+                                <p>File: {source.fileName}</p>
+                                <p>Page: {source.pageNumber}</p>
+                              </div>
+                            ))}
+                          </>
+                        );
+                      })()}
                     </div>
                   )}
                 </div>

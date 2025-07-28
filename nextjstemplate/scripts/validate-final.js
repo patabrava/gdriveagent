@@ -78,13 +78,13 @@ async function runFinalValidation() {
         type: 'overview',
         context: 'Multiple elevator maintenance documents with invoices and reports',
         question: 'Show me an overview of all maintenance activities',
-        expectedElements: ['comprehensive overview', '## Summary', 'Recent Invoices']
+        expectedElements: ['CRITICAL: You MUST follow', '## Summary', 'Recent Invoices']
       },
       {
         type: 'specific',
         context: 'Invoice #12345 for elevator service',
         question: 'What was the cost of invoice 12345?',
-        expectedElements: ['precise and include exact details', '**Details:**', 'Source Documents']
+        expectedElements: ['CRITICAL SEARCH REQUIREMENTS', 'Direct Answer', 'Additional Context']
       }
     ];
     
