@@ -6,6 +6,8 @@ export interface PromptContext {
   queryType: 'overview' | 'specific';
   isFileSpecific?: boolean;
   fileName?: string;
+  isElevatorSpecific?: boolean;
+  elevatorId?: string;
 }
 
 export class PromptBuilder {
@@ -16,7 +18,7 @@ export class PromptBuilder {
    * Combines system prompt, query-specific enhancements, and formatting
    */
   buildPrompt(context: PromptContext): string {
-    const { documents, question, queryType, isFileSpecific, fileName } = context;
+    const { documents, question, queryType, isFileSpecific, fileName, isElevatorSpecific, elevatorId } = context;
     
     // Base system prompt
     const basePrompt = this.config.prompts.system.base;
@@ -25,7 +27,35 @@ export class PromptBuilder {
     // Query-specific enhancement
     const queryConfig = this.config.prompts.query_types[queryType];
     const enhancement = queryConfig.enhancement;
-    const formatInstructions = queryConfig.format_instructions;
+    let formatInstructions = queryConfig.format_instructions;
+    
+    // Use elevator-specific format if it's an elevator query
+    if (isElevatorSpecific && elevatorId && queryType === 'specific') {
+      // Keep the elevator-specific format as defined in the config
+    } else if (queryType === 'specific') {
+      // Use a general format without source duplication for non-elevator queries
+      formatInstructions = `
+        # 🔍 Query Results
+        
+        ## Direct Answer
+        
+        *[Clear, direct response to the question]*
+        
+        ## 📋 Details
+        
+        - **[Key Detail 1]**: [Value] 
+          - **Source**: \`[Document: filename]\`
+          - **Context**: [Additional relevant information]
+        
+        - **[Key Detail 2]**: [Value]
+          - **Source**: \`[Document: filename]\`
+          - **Context**: [Additional relevant information]
+        
+        ## 🔍 Additional Context
+        
+        *[Any relevant background information or related findings]*
+      `;
+    }
     
     // Build the complete prompt
     let fullPrompt = `${basePrompt}\n\n${personality}\n\n`;
@@ -33,6 +63,10 @@ export class PromptBuilder {
     // Add context-specific instructions
     if (isFileSpecific && fileName) {
       fullPrompt += `The user is asking specifically about "${fileName}". Focus on information from this document while providing relevant context from related documents.\n\n`;
+    }
+    
+    if (isElevatorSpecific && elevatorId) {
+      fullPrompt += `The user is asking specifically about elevator ID/number "${elevatorId}". Search thoroughly through all provided documents to find any information about this specific elevator, including maintenance records, malfunctions, inspections, invoices, and any related work. Be comprehensive in analyzing all documents for this elevator ID.\n\n`;
     }
     
     // Add query type enhancement

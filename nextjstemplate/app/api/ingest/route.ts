@@ -268,6 +268,9 @@ export async function GET(req: NextRequest) {
         const content = await parseFileContent(fileBuffer, file.mimeType!, file.name!);
         
         if (content.trim()) {
+          // Extract elevator IDs from content for better searchability
+          const elevatorIds = content.match(/\b\d{6,12}\b/g) || [];
+          
           // Split content into chunks
           const chunks = await textSplitter.splitText(content);
           
@@ -281,11 +284,12 @@ export async function GET(req: NextRequest) {
               webViewLink: file.webViewLink,
               chunkIndex: index,
               totalChunks: chunks.length,
+              elevatorIds: elevatorIds.join(','), // Store found elevator IDs for faster searching
             }
           }));
           
           allDocuments.push(...docs);
-          console.log(`[FILE_SUCCESS] Processed ${currentFile}: ${chunks.length} chunks`);
+          console.log(`[FILE_SUCCESS] Processed ${currentFile}: ${chunks.length} chunks, found ${elevatorIds.length} potential elevator IDs`);
         } else {
           console.log(`[FILE_EMPTY] File ${currentFile} has no processable content`);
         }

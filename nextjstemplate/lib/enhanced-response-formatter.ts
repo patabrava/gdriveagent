@@ -60,17 +60,17 @@ export class EnhancedResponseFormatter {
 {sources}`
   };
 
-  private static logFormatting(action: string, details: any): void {
+  private static logFormatting(action: string, details: Record<string, unknown> | FormattingMetrics): void {
     console.log(`[ENHANCED_FORMATTER] ${action}:`, JSON.stringify(details));
   }
 
   /**
    * Main formatting function with structure enforcement
    */
-  static formatResponse(
+  static async formatResponse(
     content: string, 
     queryType: 'overview' | 'specific'
-  ): { formatted: string; metrics: FormattingMetrics; validation: StructureValidation } {
+  ): Promise<{ formatted: string; metrics: FormattingMetrics; validation: StructureValidation }> {
     
     const startTime = Date.now();
     const originalLength = content.length;
@@ -287,7 +287,7 @@ export class EnhancedResponseFormatter {
   private static breakLongSection(section: string): string {
     const lines = section.split('\n');
     const sectionTitle = lines[0];
-    let content = lines.slice(1).join('\n');
+    const content = lines.slice(1).join('\n');
 
     // Look for natural break points (bullet lists, paragraphs)
     const paragraphs = content.split('\n\n');
@@ -369,15 +369,9 @@ export class EnhancedResponseFormatter {
   }
 
   private static ensureRequiredSections(content: string, requiredSections: string[]): string {
-    let result = content;
-    
-    for (const section of requiredSections) {
-      if (!result.includes(`## ${section}`)) {
-        result += `\n\n## ${section}\n\n*Information pending...*`;
-      }
-    }
-    
-    return result;
+    // Don't force empty sections with placeholder text
+    // Let the content speak for itself without artificial padding
+    return content;
   }
 
   private static hasHeadingLevelViolations(content: string): boolean {

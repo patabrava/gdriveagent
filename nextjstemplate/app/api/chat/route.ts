@@ -1,7 +1,6 @@
 import { type Message } from "ai";
 import { NextResponse } from "next/server";
 import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
-import { ChatPromptTemplate } from "@langchain/core/prompts";
 import { RunnableSequence } from "@langchain/core/runnables";
 import { StringOutputParser } from "@langchain/core/output_parsers";
 
@@ -9,7 +8,7 @@ import { StringOutputParser } from "@langchain/core/output_parsers";
 import { sessionVectorStores } from "../ingest/route";
 
 // Import YAML-based prompt configuration
-import { loadPromptConfig, getConfigStatus } from "@/lib/prompt-config";
+import { loadPromptConfig } from "@/lib/prompt-config";
 import { PromptBuilder } from "@/lib/prompt-builder";
 import { EnhancedResponseFormatter } from "@/lib/enhanced-response-formatter";
 
@@ -25,7 +24,7 @@ async function getPromptBuilder(): Promise<PromptBuilder> {
       promptBuilder = new PromptBuilder(config);
       console.log(`[CHAT] Loaded prompt config v${config.metadata.version}`);
     } catch (error) {
-      console.error('[CHAT] Failed to load prompt config, using fallback');
+      console.error('[CHAT] Failed to load prompt config, using fallback:', error);
       // Fallback will be handled by loadPromptConfig internally
       const fallbackConfig = await loadPromptConfig();
       promptBuilder = new PromptBuilder(fallbackConfig);
@@ -74,8 +73,19 @@ export async function POST(req: Request) {
     // Check if user is asking about a specific document by filename
     const fileNameMatch = lastMessage.content.match(/(?:Rechnung|Invoice|Document|File)[\s\-_]*(\w+(?:\.\w+)?)/i);
     
+    // Check if user is asking about a specific elevator by ID/number - Enhanced pattern
+    const elevatorIdMatch = lastMessage.content.match(/(?:elevator|lift)[\s\-_]*(?:with[\s\-_]*(?:the[\s\-_]*)?)?(?:number|id|nr)?[\s\-_]*(\d{6,12})/i);
+    
+    // Also check for general numeric patterns that might be elevator IDs
+    const numericIdMatch = lastMessage.content.match(/\b(\d{6,12})\b/);
+    
+    console.log(`[ELEVATOR_DETECTION] Query: "${lastMessage.content}"`);
+    console.log(`[ELEVATOR_DETECTION] Elevator ID match:`, elevatorIdMatch);
+    console.log(`[ELEVATOR_DETECTION] Numeric ID match:`, numericIdMatch);
+    
     // Adjust search parameters based on query type
-    const searchLimit = isOverviewQuery ? 20 : 4; // More chunks for overview queries
+    const searchLimit = isOverviewQuery ? 20 : (elevatorIdMatch || numericIdMatch ? 15 : 4); // More chunks for elevator ID queries
+    console.log(`[SEARCH_CONFIG] Overview: ${isOverviewQuery}, Elevator ID: ${!!elevatorIdMatch}, Numeric ID: ${!!numericIdMatch}, Search limit: ${searchLimit}`);
     let relevantDocs = await vectorStore.similaritySearch(lastMessage.content, searchLimit);
     
     // If searching for a specific document and no results contain it, try filename-based search
@@ -101,7 +111,84 @@ export async function POST(req: Request) {
       }
     }
     
+    // If searching for a specific elevator ID and no results contain it, try content-based search
+    if ((elevatorIdMatch || numericIdMatch) && !isOverviewQuery) {
+      const elevatorId = elevatorIdMatch?.[1] || numericIdMatch?.[1];
+      console.log(`[ELEVATOR_SEARCH] Searching for elevator ID: ${elevatorId}`);
+      
+      const hasElevatorDoc = relevantDocs.some(doc => 
+        doc.pageContent.includes(elevatorId!) || 
+        doc.metadata.fileName.includes(elevatorId!) ||
+        doc.metadata.elevatorIds?.includes(elevatorId!)
+      );
+      
+      console.log(`[ELEVATOR_SEARCH] Found elevator in initial results: ${hasElevatorDoc}`);
+      console.log(`[ELEVATOR_SEARCH] Checking documents:`, relevantDocs.map(doc => ({
+        fileName: doc.metadata.fileName,
+        hasElevatorInContent: doc.pageContent.includes(elevatorId!),
+        hasElevatorInFilename: doc.metadata.fileName.includes(elevatorId!),
+        elevatorIds: doc.metadata.elevatorIds
+      })));
+      
+      if (!hasElevatorDoc) {
+        console.log(`[ELEVATOR_SEARCH] Elevator ID "${elevatorId}" not found in similarity search. Expanding to ALL documents...`);
+        
+        // Search ALL documents in the vector store, not just a limited subset
+        const allDocsSearch = await vectorStore.similaritySearch(elevatorId!, 100); // Get many more results
+        console.log(`[ELEVATOR_SEARCH] Expanded search returned ${allDocsSearch.length} documents`);
+        
+        const elevatorMatchedDocs = allDocsSearch.filter(doc => 
+          doc.pageContent.includes(elevatorId!) || 
+          doc.metadata.fileName.includes(elevatorId!) ||
+          doc.metadata.elevatorIds?.includes(elevatorId!)
+        );
+        
+        console.log(`[ELEVATOR_SEARCH] Found ${elevatorMatchedDocs.length} documents containing elevator ID "${elevatorId}"`);
+        
+        if (elevatorMatchedDocs.length > 0) {
+          // Prioritize elevator ID matches while keeping some semantic results
+          relevantDocs = [...elevatorMatchedDocs, ...relevantDocs.slice(0, 3)];
+          console.log(`[ELEVATOR_SEARCH] Updated relevantDocs to ${relevantDocs.length} documents`);
+        } else {
+          console.log(`[ELEVATOR_SEARCH] Still no matches found. Trying alternative search strategies...`);
+          
+          // Try searching with alternative keywords and broader patterns
+          const altSearchTerms = [
+            elevatorId!, // Just the number
+            `elevator ${elevatorId}`, 
+            `lift ${elevatorId}`, 
+            `nr ${elevatorId}`, 
+            `number ${elevatorId}`,
+            `${elevatorId!.substring(0, 6)}`, // Partial match in case of formatting differences
+            `${elevatorId!.substring(1)}`, // Without first digit
+            `0${elevatorId}` // With leading zero
+          ];
+          
+          for (const altTerm of altSearchTerms) {
+            console.log(`[ELEVATOR_SEARCH] Trying alternative term: "${altTerm}"`);
+            const altDocs = await vectorStore.similaritySearch(altTerm, 50);
+            const altMatches = altDocs.filter(doc => 
+              doc.pageContent.includes(elevatorId!) || 
+              doc.pageContent.includes(altTerm) ||
+              doc.metadata.fileName.includes(elevatorId!)
+            );
+            
+            if (altMatches.length > 0) {
+              relevantDocs = [...altMatches, ...relevantDocs.slice(0, 2)];
+              console.log(`[ELEVATOR_SEARCH] Found ${altMatches.length} matches using alternative search term: "${altTerm}"`);
+              break;
+            }
+          }
+        }
+      }
+    }
+    
     console.log(`Found ${relevantDocs.length} relevant document chunks ${isOverviewQuery ? '(overview mode)' : '(focused mode)'}`);
+    console.log(`[DOCUMENT_ANALYSIS] Documents being analyzed:`, relevantDocs.map(doc => ({
+      fileName: doc.metadata.fileName,
+      chunkIndex: doc.metadata.chunkIndex,
+      contentPreview: doc.pageContent.substring(0, 100) + '...'
+    })));
 
     // Use YAML-configured error message if no documents found
     if (relevantDocs.length === 0) {
@@ -145,7 +232,9 @@ export async function POST(req: Request) {
       question: lastMessage.content,
       queryType: isOverviewQuery ? 'overview' as const : 'specific' as const,
       isFileSpecific: !!fileNameMatch,
-      fileName: fileNameMatch?.[1]
+      fileName: fileNameMatch?.[1],
+      isElevatorSpecific: !!(elevatorIdMatch || numericIdMatch),
+      elevatorId: elevatorIdMatch?.[1] || numericIdMatch?.[1]
     };
 
     // Generate the prompt using YAML configuration
