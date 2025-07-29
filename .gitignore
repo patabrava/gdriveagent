@@ -118,3 +118,22 @@ code_expansion.yaml
 code_implosion.yaml
 slow_planning.yaml
 new_code.yaml
+
+# Temporary development files and empty files that might be created accidentally
+*.tmp
+*.temp
+*~
+.#*
+#*#
+
+# VS Code temporary files
+.vscode/settings.json
+.vscode/launch.json
+.vscode/tasks.json
+.vscode/extensions.json
+
+# Development artifacts that shouldn't be tracked
+nextjstemplate/docs/GEMINI_MULTIMODAL_INTEGRATION.md
+nextjstemplate/lib/gemini-document-processor.ts
+nextjstemplate/lib/gemini-fallback.ts
+nextjstemplate/scripts/validate-gemini-integration.js
