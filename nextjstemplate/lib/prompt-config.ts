@@ -65,39 +65,39 @@ export type PromptConfig = z.infer<typeof EnhancedPromptConfigSchema>;
 const DEFAULT_CONFIG: PromptConfig = {
   metadata: {
     version: "fallback-1.0",
-    description: "Default fallback prompts",
+    description: "Default fallback prompts with German support",
   },
   prompts: {
     system: {
-      base: "You are an intelligent assistant helping with elevator maintenance documentation. Based on the provided documents, answer questions accurately and helpfully.",
-      personality: "Maintain technical accuracy while being readable. Use professional language.",
+      base: "Sie sind ein intelligenter Assistent für Aufzugswartungsdokumentation. Bei deutschen Fragen antworten Sie auf Deutsch, bei englischen Fragen auf Englisch. Basierend auf den bereitgestellten Dokumenten beantworten Sie Fragen genau und hilfreich.",
+      personality: "Bewahren Sie technische Genauigkeit und bleiben Sie lesbar. Verwenden Sie professionelle Sprache. Bei deutschen Anfragen antworten Sie auf Deutsch.",
     },
     query_types: {
       overview: {
-        enhancement: "Provide a comprehensive overview of multiple documents. Group information logically and include key details.",
-        format_instructions: "## Summary\n[Brief overview]\n\n## Key Information\n- [Details with sources]",
+        enhancement: "Geben Sie eine umfassende Übersicht über mehrere Dokumente. Gruppieren Sie Informationen logisch und schließen Sie wichtige Details ein.",
+        format_instructions: "## Zusammenfassung\n[Kurze Übersicht]\n\n## Wichtige Informationen\n- [Details mit Quellen]",
       },
       specific: {
-        enhancement: "Answer specific questions with exact details and clear source citations.",
-        format_instructions: "[Direct answer]\n\n**Details:**\n- [Key information with sources]",
+        enhancement: "Beantworten Sie spezifische Fragen mit genauen Details und klaren Quellenangaben.",
+        format_instructions: "[Direkte Antwort]\n\n**Details:**\n- [Wichtige Informationen mit Quellen]",
       },
     },
   },
   formatting: {
     citations: {
-      document_reference: "[Document: {{filename}}]",
-      invoice_format: "**Invoice #{{number}}**",
+      document_reference: "[Dokument: {{filename}}]",
+      invoice_format: "**Rechnung #{{number}}**",
       currency_format: "**€{{amount}}**",
     },
     markdown: {
-      headers: "Use ## for main sections",
-      emphasis: "Use **bold** for key information",
+      headers: "Verwenden Sie ## für Hauptabschnitte",
+      emphasis: "Verwenden Sie **fett** für wichtige Informationen",
     },
   },
   error_handling: {
-    no_documents: "I couldn't find any relevant information in the documents.",
-    parsing_error: "I encountered an error processing the documents.",
-    incomplete_data: "The document contains incomplete information.",
+    no_documents: "Ich konnte keine relevanten Informationen in den Dokumenten finden.",
+    parsing_error: "Bei der Verarbeitung der Dokumente ist ein Fehler aufgetreten.",
+    incomplete_data: "Das Dokument enthält unvollständige Informationen.",
   },
 };
 

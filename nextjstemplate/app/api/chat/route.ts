@@ -1,6 +1,5 @@
 import { type Message } from "ai";
 import { NextResponse } from "next/server";
-import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 import { RunnableSequence } from "@langchain/core/runnables";
 import { StringOutputParser } from "@langchain/core/output_parsers";
 
@@ -8,18 +7,30 @@ import { StringOutputParser } from "@langchain/core/output_parsers";
 import { sessionVectorStores } from "../ingest/route";
 
 // Import YAML-based prompt configuration
-import { loadPromptConfig } from "@/lib/prompt-config";
+import { loadPromptConfig, invalidateConfigCache } from "@/lib/prompt-config";
 import { PromptBuilder } from "@/lib/prompt-builder";
+
+// Import LLM Provider Factory
+import { LLMProviderFactory } from "@/lib/llm-providers";
 
 export const dynamic = "force-dynamic";
 
-// Initialize prompt builder at module level
+// Initialize providers and prompt builder at module level
 let promptBuilder: PromptBuilder | null = null;
+let providersInitialized = false;
 
-async function getPromptBuilder(): Promise<PromptBuilder> {
-  if (!promptBuilder) {
+async function getPromptBuilder(forceRefresh: boolean = false): Promise<PromptBuilder> {
+  // In development, always force refresh to pick up config changes
+  const isDev = process.env.NODE_ENV === 'development';
+  
+  if (!promptBuilder || forceRefresh || isDev) {
     try {
-      const config = await loadPromptConfig();
+      if (forceRefresh || isDev) {
+        invalidateConfigCache();
+        promptBuilder = null; // Clear cached builder
+      }
+      
+      const config = await loadPromptConfig(forceRefresh || isDev);
       promptBuilder = new PromptBuilder(config);
       console.log(`[CHAT] Loaded prompt config v${config.metadata.version}`);
     } catch (error) {
@@ -32,10 +43,20 @@ async function getPromptBuilder(): Promise<PromptBuilder> {
   return promptBuilder;
 }
 
+function initializeProviders(): void {
+  if (!providersInitialized) {
+    LLMProviderFactory.initializeProviders();
+    providersInitialized = true;
+  }
+}
+
 export async function POST(req: Request) {
   let currentSessionId: string = 'default-session'; // Declare at function level for error handling
   
   try {
+    // Initialize providers
+    initializeProviders();
+    
     const { messages, sessionId }: { messages: Message[], sessionId?: string } = await req.json();
     currentSessionId = sessionId || 'default-session';
 
@@ -82,8 +103,8 @@ export async function POST(req: Request) {
     console.log(`[ELEVATOR_DETECTION] Elevator ID match:`, elevatorIdMatch);
     console.log(`[ELEVATOR_DETECTION] Numeric ID match:`, numericIdMatch);
     
-    // Adjust search parameters based on query type
-    const searchLimit = isOverviewQuery ? 20 : (elevatorIdMatch || numericIdMatch ? 15 : 4); // More chunks for elevator ID queries
+    // Adjust search parameters based on query type - OPTIMIZED for smaller prompts
+    const searchLimit = isOverviewQuery ? 12 : (elevatorIdMatch || numericIdMatch ? 8 : 3); // Reduced from 20/15/4
     console.log(`[SEARCH_CONFIG] Overview: ${isOverviewQuery}, Elevator ID: ${!!elevatorIdMatch}, Numeric ID: ${!!numericIdMatch}, Search limit: ${searchLimit}`);
     let relevantDocs = await vectorStore.similaritySearch(lastMessage.content, searchLimit);
     
@@ -209,23 +230,23 @@ export async function POST(req: Request) {
           fileMap.set(fileName, doc);
         }
       });
-      processedDocs = Array.from(fileMap.values()).slice(0, 15); // Limit to 15 unique files for manageable response
+      processedDocs = Array.from(fileMap.values()).slice(0, 10); // Reduced from 15 to 10
     }
 
-    // Create context from relevant documents
-    const context = processedDocs.map((doc, index) => 
-      `Document ${index + 1} (${doc.metadata.fileName}):\n${doc.pageContent}`
-    ).join('\n\n---\n\n');
-
-    // Initialize Google Generative AI LLM
-    const llm = new ChatGoogleGenerativeAI({
-      apiKey: process.env.GEMINI_API_KEY,
-      temperature: 0.7,
-      model: "gemini-1.5-flash",
-    });
+    // Create context from relevant documents with size optimization
+    const context = processedDocs.map((doc, index) => {
+      // Truncate very long content to prevent bloat
+      const truncatedContent = doc.pageContent.length > 600 
+        ? doc.pageContent.substring(0, 600) + '...[truncated]'
+        : doc.pageContent;
+      return `Doc ${index + 1} (${doc.metadata.fileName}):\n${truncatedContent}`;
+    }).join('\n\n---\n\n');
 
     // Get prompt builder and generate context-aware prompt
+    console.log(`[CHAT] Loading prompt builder...`);
     const builder = await getPromptBuilder();
+    console.log(`[CHAT] Prompt builder loaded successfully`);
+    
     const promptContext = {
       documents: context,
       question: lastMessage.content,
@@ -235,18 +256,120 @@ export async function POST(req: Request) {
       isElevatorSpecific: !!(elevatorIdMatch || numericIdMatch),
       elevatorId: elevatorIdMatch?.[1] || numericIdMatch?.[1]
     };
+    console.log(`[CHAT] Prompt context prepared:`, {
+      documentsLength: context.length,
+      questionLength: lastMessage.content.length,
+      queryType: promptContext.queryType,
+      isElevatorSpecific: promptContext.isElevatorSpecific,
+      elevatorId: promptContext.elevatorId
+    });
 
     // Generate the prompt using YAML configuration
-    const promptTemplate = builder.formatPrompt(promptContext);
+    console.log(`[CHAT] Generating prompt for context...`);
+    let promptTemplate: string;
+    try {
+      // Add timeout for prompt generation to prevent infinite loops
+      promptTemplate = await Promise.race([
+        Promise.resolve(builder.formatPrompt(promptContext)),
+        new Promise<never>((_, reject) => 
+          setTimeout(() => reject(new Error('Prompt generation timeout after 5 seconds')), 5000)
+        )
+      ]);
+      console.log(`[CHAT] Prompt generated successfully, length: ${promptTemplate.length} characters`);
+    } catch (error) {
+      console.error(`[CHAT] Error during prompt generation:`, error);
+      throw new Error(`Prompt generation failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
 
-    // Create simplified chain since template is already processed
-    const chain = RunnableSequence.from([
-      llm,
-      new StringOutputParser(),
-    ]);
+    // **NEW: Multi-Provider LLM Execution with Fallback**
+    console.log(`[CHAT] Starting multi-provider LLM execution...`);
+    console.log(`[CHAT] Request payload size: ${promptTemplate.length} characters`);
+    
+    const startTime = Date.now();
+    let response: string = "";
+    let lastError: Error | null = null;
+    let providersAttempted: string[] = [];
 
-    // Generate response using the chain with the formatted prompt
-    const response = await chain.invoke(promptTemplate);
+    // Provider execution order: Gemini (primary) → OpenAI (fallback)
+    const providerOrder = ["gemini", "openai"];
+    
+    for (const providerName of providerOrder) {
+      const provider = LLMProviderFactory.getProvider(providerName);
+      
+      if (!provider || !provider.isAvailable) {
+        console.log(`[CHAT] Skipping unavailable provider: ${providerName}`);
+        continue;
+      }
+
+      try {
+        console.log(`[CHAT] Attempting with provider: ${providerName}`);
+        providersAttempted.push(providerName);
+        
+        // Create chain for current provider
+        const chain = RunnableSequence.from([
+          provider.model,
+          new StringOutputParser(),
+        ]);
+        
+        // Execute with timeout
+        const timeoutDuration = promptTemplate.length > 5000 ? 30000 : 20000; // Reduced timeouts
+        console.log(`[CHAT] Using ${timeoutDuration/1000}s timeout for ${providerName}`);
+        
+        response = await Promise.race([
+          chain.invoke(promptTemplate),
+          new Promise<never>((_, reject) => 
+            setTimeout(() => reject(new Error(`${providerName} timeout after ${timeoutDuration/1000}s`)), timeoutDuration)
+          )
+        ]) as string;
+        
+        console.log(`[CHAT] ✓ ${providerName} response received, length: ${response.length} characters`);
+        console.log(`[CHAT] Request completed in ${Date.now() - startTime}ms using ${providerName}`);
+        break; // Success, exit provider loop
+        
+      } catch (providerError) {
+        lastError = providerError instanceof Error ? providerError : new Error(String(providerError));
+        console.log(`[CHAT] ✗ ${providerName} failed: ${lastError.message}`);
+        
+        // Check if we should mark provider as temporarily unavailable
+        const errorMessage = lastError.message.toLowerCase();
+        if (errorMessage.includes('503') || errorMessage.includes('quota') || errorMessage.includes('overloaded')) {
+          LLMProviderFactory.markProviderUnavailable(providerName, 60000); // 1 minute
+        }
+        
+        // Continue to next provider
+        continue;
+      }
+    }
+    
+    // If all providers failed, generate intelligent fallback
+    if (!response && lastError) {
+      console.error(`[CHAT] All providers failed. Attempted: ${providersAttempted.join(', ')}`);
+      console.error(`[CHAT] Final error:`, lastError.message);
+      
+      // Generate intelligent fallback based on document content
+      const isGerman = /\b(Aufzug|Störung|wieviele|welche|der|die|das|mit|Nummer)\b/i.test(lastMessage.content);
+      
+      if (elevatorIdMatch || numericIdMatch) {
+        const elevatorId = elevatorIdMatch?.[1] || numericIdMatch?.[1];
+        const relevantFiles = processedDocs
+          .filter(doc => 
+            doc.pageContent.includes(elevatorId!) || 
+            doc.metadata.fileName.includes(elevatorId!) ||
+            doc.metadata.elevatorIds?.includes(elevatorId!)
+          )
+          .map(doc => doc.metadata.fileName);
+        
+        response = isGerman 
+          ? `🔧 **Aufzug ${elevatorId} - Dokumentenanalyse**\n\n**Gefundene Dokumente:**\n${relevantFiles.map(file => `• ${file}`).join('\n')}\n\n**Hinweis:** AI-Services momentan nicht verfügbar. Bitte versuchen Sie es in wenigen Minuten erneut.`
+          : `🔧 **Elevator ${elevatorId} - Document Analysis**\n\n**Found Documents:**\n${relevantFiles.map(file => `• ${file}`).join('\n')}\n\n**Note:** AI services currently unavailable. Please try again in a few minutes.`;
+      } else {
+        response = isGerman 
+          ? `⚠️ **Service-Hinweis**\n\nAI-Services sind momentan nicht verfügbar.\n\n**Verfügbare Dokumente:** ${processedDocs.length} gefunden\n\nBitte versuchen Sie Ihre Frage in 2-3 Minuten erneut.`
+          : `⚠️ **Service Notice**\n\nAI services are currently unavailable.\n\n**Available Documents:** ${processedDocs.length} found\n\nPlease try your question again in 2-3 minutes.`;
+      }
+      
+      console.log(`[CHAT] Generated intelligent fallback response`);
+    }
 
     // Extract source information first for logging
     const sources = relevantDocs.map(doc => ({
@@ -260,9 +383,9 @@ export async function POST(req: Request) {
     const formattedResponse = response; // Direct response without additional formatting
     
     // Structured logging for observability (MONOCODE Observable Implementation)
-    console.log(`[CHAT] Response generated:`, {
+    console.log(`[CHAT] Response generated successfully:`, {
       sessionId: currentSessionId,
-      queryType,
+      providersAttempted: providersAttempted.join(' → '),
       responseLength: response.length,
       sourcesCount: sources.length,
       timestamp: new Date().toISOString()
@@ -275,6 +398,10 @@ export async function POST(req: Request) {
       role: "assistant" as const,
       content: formattedResponse, // Use formatted response instead of raw response
       sources: sources,
+      metadata: {
+        providersAttempted,
+        processingTimeMs: Date.now() - startTime
+      }
     });
 
   } catch (error) {
@@ -287,14 +414,29 @@ export async function POST(req: Request) {
       stack: error instanceof Error ? error.stack : undefined
     };
     
-    console.error("[CHAT] Error occurred:", errorDetails);
+    console.error("[CHAT] Critical error occurred:", errorDetails);
+    console.error("[CHAT] Full error object:", error);
+    
+    // More descriptive error message based on error type
+    let userMessage = "I encountered an error while processing your question. Please try again or contact support if the issue persists.";
+    
+    if (error instanceof Error) {
+      if (error.message.includes('timeout')) {
+        userMessage = "The request timed out. This might be due to high server load. Please try again in a moment.";
+      } else if (error.message.includes('API')) {
+        userMessage = "There was an issue connecting to the AI service. Please try again.";
+      } else if (error.message.includes('Prompt generation')) {
+        userMessage = "There was an issue processing your question. Please try rephrasing your query.";
+      }
+    }
     
     return NextResponse.json(
       { 
         role: "assistant" as const,
-        content: "I encountered an error while processing your question. Please try again or contact support if the issue persists.",
+        content: userMessage,
         error: "Internal server error",
-        errorId: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}` // For tracking
+        errorId: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`, // For tracking
+        errorType: errorDetails.errorType
       },
       { status: 500 }
     );
